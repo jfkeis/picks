@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-WagerTalk scraper - Playwright with stealth settings to bypass bot detection
-Writes docs/index.html for GitHub Pages
+WagerTalk scraper - Drew Martin & Jimmy Adams only
+Runs on cron, pushes updated HTML to GitHub Pages
 """
 
-import re, sys, os
+import re, sys, os, subprocess
 from datetime import datetime
+
+URL = "https://www.wagertalk.com/free-sports-picks"
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def fetch_text():
@@ -19,46 +22,16 @@ def fetch_text():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-            ]
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
-
-        # Use a realistic browser context
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800},
-            locale="en-US",
-            timezone_id="America/New_York",
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            }
+        page = browser.new_page(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
-
-        # Hide the fact that we're running automation
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            window.chrome = { runtime: {} };
-        """)
-
-        page = context.new_page()
-
-        # Visit Google first to look like a real referral
-        page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=15000)
-        page.wait_for_timeout(1000)
-
-        # Now go to WagerTalk
-        page.goto("https://www.wagertalk.com/free-sports-picks", wait_until="networkidle", timeout=45000)
-        page.wait_for_timeout(4000)
-
+        page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+        # Wait until picks are actually rendered
+        page.wait_for_selector("text=JIMMY ADAMS", timeout=20000)
         text = page.inner_text("body")
         browser.close()
-
     return text
 
 
@@ -135,7 +108,7 @@ def esc(s):
 
 
 def build_html(picks):
-    fetched = datetime.now().strftime("%b %d, %Y %H:%M UTC")
+    fetched = datetime.now().strftime("%b %d, %Y %H:%M")
 
     if not picks:
         body = '<p style="color:#444;text-align:center;margin-top:4rem">No picks from Drew Martin or Jimmy Adams right now. Check back later.</p>'
@@ -193,23 +166,34 @@ def build_html(picks):
     )
 
 
+def git_push():
+    print("Pushing to GitHub...")
+    os.chdir(REPO_DIR)
+    subprocess.run(["git", "add", "docs/index.html"], check=True)
+    result = subprocess.run(["git", "diff", "--staged", "--quiet"])
+    if result.returncode != 0:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        subprocess.run(["git", "commit", "-m", f"Update picks {timestamp}"], check=True)
+        subprocess.run(["git", "push"], check=True)
+        print("Pushed.")
+    else:
+        print("No changes to push.")
+
+
 def main():
-    URL = "https://www.wagertalk.com/free-sports-picks"
     print("Fetching", URL)
     text = fetch_text()
-
-    print("--- Page sample (chars 1500-2500) ---")
-    print(text[1500:2500])
-    print("--------------------------------------")
-
     picks = parse_picks(text)
     print("Found", len(picks), "pick(s).")
     html = build_html(picks)
 
-    os.makedirs("docs", exist_ok=True)
-    with open("docs/index.html", "w", encoding="utf-8") as f:
+    docs_dir = os.path.join(REPO_DIR, "docs")
+    os.makedirs(docs_dir, exist_ok=True)
+    with open(os.path.join(docs_dir, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
     print("Written to docs/index.html")
+
+    git_push()
 
 
 if __name__ == "__main__":
