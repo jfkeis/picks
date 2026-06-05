@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-WagerTalk scraper - server mode
-Writes index.html to docs/index.html for GitHub Pages
+WagerTalk scraper - Playwright with stealth settings to bypass bot detection
+Writes docs/index.html for GitHub Pages
 """
 
 import re, sys, os
 from datetime import datetime
-
-URL = "https://www.wagertalk.com/free-sports-picks"
 
 
 def fetch_text():
@@ -19,14 +17,48 @@ def fetch_text():
 
     print("Launching browser...")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ]
         )
-        page.goto(URL, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(3000)
+
+        # Use a realistic browser context
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+            timezone_id="America/New_York",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            }
+        )
+
+        # Hide the fact that we're running automation
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        """)
+
+        page = context.new_page()
+
+        # Visit Google first to look like a real referral
+        page.goto("https://www.google.com", wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1000)
+
+        # Now go to WagerTalk
+        page.goto("https://www.wagertalk.com/free-sports-picks", wait_until="networkidle", timeout=45000)
+        page.wait_for_timeout(4000)
+
         text = page.inner_text("body")
         browser.close()
+
     return text
 
 
@@ -34,6 +66,9 @@ def extract_field(block, label):
     m = re.search(rf'{re.escape(label)}:\s*\n(.*?)(?:\n\n|\n(?=[A-Z]))', block, re.DOTALL)
     if m:
         return m.group(1).strip()
+    m2 = re.search(rf'{re.escape(label)}:\s*(.+?)(?:\n|$)', block)
+    if m2:
+        return m2.group(1).strip()
     return ""
 
 
@@ -59,8 +94,7 @@ def parse_picks(text):
 
         analysis = ""
         play_pos = block.find("Play:\n")
-        rel_pos  = block.find("Released/revised")
-        if play_pos != -1 and rel_pos != -1:
+        if play_pos != -1:
             after_play = block[play_pos + 6:]
             lines = after_play.split("\n")
             started = False
@@ -160,8 +194,14 @@ def build_html(picks):
 
 
 def main():
+    URL = "https://www.wagertalk.com/free-sports-picks"
     print("Fetching", URL)
     text = fetch_text()
+
+    print("--- Page sample (chars 1500-2500) ---")
+    print(text[1500:2500])
+    print("--------------------------------------")
+
     picks = parse_picks(text)
     print("Found", len(picks), "pick(s).")
     html = build_html(picks)
